@@ -52,7 +52,7 @@ orbis-pkg-util list game.pkg
 
 ## Performance
 
-Although the `orbis-*` crates have not been specifically optimized for performance, they perform well in practice. On a test system (Intel W-3175X, Samsung 990 Pro NVMe, 192 GB DDR4-4000 6-channel), full PKG extraction benchmarks yielded:
+Although the `orbis-*` crates have not been specifically optimized for performance, they perform well in practice. Benchmarked with a ~30 GB Bloodborne PKG (CUSA03173_01) on a test system (Intel W-3175X, Samsung 990 Pro NVMe, 192 GB DDR4-4000 6-channel):
 
 | Tool | Min | Avg | Max |
 |------|-----|-----|-----|
