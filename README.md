@@ -16,6 +16,12 @@ Requires [Rust](https://www.rust-lang.org/tools/install). Compiles on Windows, L
 cargo build --release
 ```
 
+Binaries will be in `target/release/`. To install them into your Cargo bin directory:
+
+```bash
+cargo install --path orbis-pkg-util
+```
+
 ## Usage
 
 Extract a PKG file (output directory defaults to title ID):
