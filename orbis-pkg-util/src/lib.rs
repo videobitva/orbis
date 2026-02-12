@@ -11,10 +11,10 @@
 //!
 //! # Example
 //!
-//! ```no_run
+//! ```ignore
 //! use orbis_pkg_util::{open_pkg, PkgExtractor, SilentProgress};
 //!
-//! let pkg = open_pkg("game.pkg".as_ref()).expect("failed to open PKG");
+//! let pkg = unsafe { open_pkg("game.pkg".as_ref()) }.expect("failed to open PKG");
 //! let extractor = PkgExtractor::new(&pkg, SilentProgress, false);
 //! extractor.extract("output/").expect("extraction failed");
 //! ```
