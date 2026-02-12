@@ -56,7 +56,7 @@ Although the `orbis-*` crates have not been specifically optimized for performan
 
 | Tool | Min | Avg | Max |
 |------|-----|-----|-----|
-| `orbis-pkg-util` | 8 s | 18 s | 20 s |
+| `orbis-pkg-util` | 9 s | 16 s | 23 s |
 | `shadPKG` | 73 s | 73 s | 75 s |
 
 ## Acknowledgements
