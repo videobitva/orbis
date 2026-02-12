@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["orbis-pfs", "orbis-pkg", "orbis-pkg-util"]
+members = ["orbis-pfs", "orbis-pkg", "orbis-pkg-fuse", "orbis-pkg-util"]
 
 [workspace.package]
 authors = ["videobitva"]
