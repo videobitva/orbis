@@ -12,30 +12,13 @@ use std::sync::Arc;
 ///
 /// Files may be compressed, in which case you should use
 /// [`pfsc::PfscImage`][crate::pfsc::PfscImage] as an [`Image`] adapter.
-///
-/// # Example
-///
-/// ```no_run
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// # let data = vec![];
-/// let pfs = orbis_pfs::open_slice(&data, None)?;
-/// let root = pfs.root().open()?;
-///
-/// if let Some(orbis_pfs::directory::DirEntry::File(file)) = root.get(b"example.txt") {
-///     let mut contents = vec![0u8; file.len() as usize];
-///     file.read_at(0, &mut contents)?;
-///     println!("File contents: {}", String::from_utf8_lossy(&contents));
-/// }
-/// # Ok(())
-/// # }
-/// ```
 #[must_use]
-pub struct File<'a> {
-    pfs: Arc<Pfs<'a>>,
+pub struct File<'a, I: Image> {
+    pfs: Arc<Pfs<'a, I>>,
     inode: usize,
 }
 
-impl<'a> std::fmt::Debug for File<'a> {
+impl<'a, I: Image> std::fmt::Debug for File<'a, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("File")
             .field("inode", &self.inode)
@@ -45,9 +28,15 @@ impl<'a> std::fmt::Debug for File<'a> {
     }
 }
 
-impl<'a> File<'a> {
-    pub(crate) fn new(pfs: Arc<Pfs<'a>>, inode: usize) -> Self {
+impl<'a, I: Image> File<'a, I> {
+    pub(crate) fn new(pfs: Arc<Pfs<'a, I>>, inode: usize) -> Self {
         Self { pfs, inode }
+    }
+
+    /// Returns the inode index for this file within the PFS.
+    #[must_use]
+    pub fn inode_index(&self) -> usize {
+        self.inode
     }
 
     #[must_use]
@@ -186,27 +175,8 @@ impl<'a> File<'a> {
     ///
     /// Each reader maintains its own cursor position. Multiple readers can
     /// exist concurrently for the same file.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use std::io::Read;
-    ///
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let data = vec![];
-    /// let pfs = orbis_pfs::open_slice(&data, None)?;
-    /// let root = pfs.root().open()?;
-    ///
-    /// if let Some(orbis_pfs::directory::DirEntry::File(file)) = root.get(b"example.txt") {
-    ///     let mut reader = file.reader();
-    ///     let mut contents = String::new();
-    ///     reader.read_to_string(&mut contents)?;
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
     #[must_use]
-    pub fn reader(&self) -> FileReader<'a> {
+    pub fn reader(&self) -> FileReader<'a, I> {
         FileReader {
             file: self.clone(),
             pos: 0,
@@ -216,7 +186,7 @@ impl<'a> File<'a> {
     /// Converts this file handle into a [`PfsFileImage`] for use as an
     /// [`Image`] source (e.g. to open a nested PFS or wrap in
     /// [`PfscImage`][crate::pfsc::PfscImage]).
-    pub fn into_image(self) -> PfsFileImage<'a> {
+    pub fn into_image(self) -> PfsFileImage<'a, I> {
         PfsFileImage {
             pfs: self.pfs,
             inode: self.inode,
@@ -228,7 +198,7 @@ impl<'a> File<'a> {
     }
 }
 
-impl<'a> Clone for File<'a> {
+impl<'a, I: Image> Clone for File<'a, I> {
     fn clone(&self) -> Self {
         Self {
             pfs: self.pfs.clone(),
@@ -240,12 +210,12 @@ impl<'a> Clone for File<'a> {
 /// A cursor-based reader for a PFS [`File`], implementing [`Read`] and [`Seek`].
 ///
 /// Created via [`File::reader()`].
-pub struct FileReader<'a> {
-    file: File<'a>,
+pub struct FileReader<'a, I: Image> {
+    file: File<'a, I>,
     pos: u64,
 }
 
-impl<'a> std::fmt::Debug for FileReader<'a> {
+impl<'a, I: Image> std::fmt::Debug for FileReader<'a, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileReader")
             .field("file", &self.file)
@@ -254,7 +224,7 @@ impl<'a> std::fmt::Debug for FileReader<'a> {
     }
 }
 
-impl Read for FileReader<'_> {
+impl<I: Image> Read for FileReader<'_, I> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.file.read_at(self.pos, buf)?;
         self.pos += n as u64;
@@ -262,7 +232,7 @@ impl Read for FileReader<'_> {
     }
 }
 
-impl Seek for FileReader<'_> {
+impl<I: Image> Seek for FileReader<'_, I> {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let file_len = self.file.len();
 
@@ -291,14 +261,29 @@ impl Seek for FileReader<'_> {
 /// nested PFS images (e.g. `pfs_image.dat` inside an outer PFS), optionally
 /// wrapped in [`PfscImage`][crate::pfsc::PfscImage] for decompression.
 ///
+/// The type parameter `I` preserves the outer PFS's image type, enabling
+/// access to its internals (e.g. encryption keys) through marker traits.
+///
 /// Created via [`File::into_image()`].
 #[derive(Clone)]
-pub struct PfsFileImage<'a> {
-    pfs: Arc<Pfs<'a>>,
+pub struct PfsFileImage<'a, I: Image> {
+    pfs: Arc<Pfs<'a, I>>,
     inode: usize,
 }
 
-impl<'a> std::fmt::Debug for PfsFileImage<'a> {
+impl<'a, I: Image> PfsFileImage<'a, I> {
+    /// Returns a reference to the outer PFS that owns this file.
+    pub fn pfs(&self) -> &Arc<Pfs<'a, I>> {
+        &self.pfs
+    }
+
+    /// Returns the inode index of this file within the outer PFS.
+    pub fn inode_index(&self) -> usize {
+        self.inode
+    }
+}
+
+impl<'a, I: Image> std::fmt::Debug for PfsFileImage<'a, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PfsFileImage")
             .field("inode", &self.inode)
@@ -307,7 +292,7 @@ impl<'a> std::fmt::Debug for PfsFileImage<'a> {
     }
 }
 
-impl Image for PfsFileImage<'_> {
+impl<I: Image> Image for PfsFileImage<'_, I> {
     fn read_at(&self, offset: u64, output_buf: &mut [u8]) -> std::io::Result<usize> {
         pfs_read_at(&self.pfs, self.inode, offset, output_buf)
     }
@@ -317,7 +302,26 @@ impl Image for PfsFileImage<'_> {
     }
 }
 
-fn pfs_read_at(pfs: &Pfs<'_>, inode: usize, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+// --- Marker trait propagation for PfsFileImage ---
+
+use crate::image::HasEncryption;
+
+impl<I: Image + HasEncryption> HasEncryption for PfsFileImage<'_, I> {
+    fn xts_cipher(&self) -> &xts_mode::Xts128<aes::Aes128> {
+        self.pfs.image().xts_cipher()
+    }
+
+    fn xts_encrypted_start(&self) -> usize {
+        self.pfs.image().xts_encrypted_start()
+    }
+}
+
+fn pfs_read_at<I: Image>(
+    pfs: &Pfs<'_, I>,
+    inode: usize,
+    offset: u64,
+    buf: &mut [u8],
+) -> io::Result<usize> {
     let file_size = pfs.inode(inode).size();
 
     if buf.is_empty() || offset >= file_size {

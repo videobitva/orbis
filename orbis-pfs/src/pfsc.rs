@@ -141,6 +141,26 @@ impl<I: Image> PfscImage<I> {
         self.original_size
     }
 
+    /// Returns a reference to the underlying image source.
+    pub fn source(&self) -> &I {
+        &self.source
+    }
+
+    /// Returns the original (decompressed) block size in bytes.
+    #[must_use]
+    pub fn original_block_size(&self) -> u64 {
+        self.original_block_size
+    }
+
+    /// Returns the compressed block offset table.
+    ///
+    /// `compressed_blocks[i]` is the byte offset within the PFSC stream where
+    /// compressed block `i` starts. The compressed size of block `i` is
+    /// `compressed_blocks[i + 1] - compressed_blocks[i]`.
+    pub fn compressed_block_offsets(&self) -> &[u64] {
+        &self.compressed_blocks
+    }
+
     /// Decompresses a single PFSC block into `out`.
     ///
     /// `out` must be exactly `self.block_size` bytes.
@@ -238,5 +258,52 @@ impl<I: Image> Image for PfscImage<I> {
 
     fn len(&self) -> u64 {
         self.original_size
+    }
+}
+
+// --- Marker trait propagation for PfscImage ---
+
+use crate::image::HasEncryption;
+use aes::Aes128;
+use xts_mode::Xts128;
+
+impl<I: Image + HasEncryption> HasEncryption for PfscImage<I> {
+    fn xts_cipher(&self) -> &Xts128<Aes128> {
+        self.source.xts_cipher()
+    }
+
+    fn xts_encrypted_start(&self) -> usize {
+        self.source.xts_encrypted_start()
+    }
+}
+
+/// Marker trait: the image stack contains a PFSC compression layer.
+pub trait HasPfsc: Image {
+    /// Returns the original (decompressed) block size in bytes.
+    fn pfsc_block_size(&self) -> u64;
+
+    /// Returns the compressed block offset table.
+    fn pfsc_block_offsets(&self) -> &[u64];
+}
+
+impl<I: Image> HasPfsc for PfscImage<I> {
+    fn pfsc_block_size(&self) -> u64 {
+        self.original_block_size
+    }
+
+    fn pfsc_block_offsets(&self) -> &[u64] {
+        &self.compressed_blocks
+    }
+}
+
+use crate::image::HasOverlay;
+
+impl<I: Image + HasOverlay> HasOverlay for PfscImage<I> {
+    fn overlay_segments(&self) -> Vec<(u64, Vec<u8>)> {
+        self.source.overlay_segments()
+    }
+
+    fn write_at(&self, offset: u64, data: &[u8]) -> std::io::Result<()> {
+        self.source.write_at(offset, data)
     }
 }

@@ -3,6 +3,7 @@ use snafu::{OptionExt, ResultExt, ensure};
 use self::dirent::Dirent;
 use crate::Pfs;
 use crate::file::File;
+use crate::image::Image;
 use crate::inode::Inode;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -32,35 +33,14 @@ pub enum OpenError {
 /// Represents a directory in the PFS.
 ///
 /// Use [`open()`][Self::open] to read the directory contents.
-///
-/// # Example
-///
-/// ```no_run
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// # let data = vec![];
-/// let pfs = orbis_pfs::open_slice(&data, None)?;
-/// let root = pfs.root();
-///
-/// // List all entries in the root directory
-/// for (name, entry) in root.open()? {
-///     let name_str = String::from_utf8_lossy(&name);
-///     match entry {
-///         orbis_pfs::directory::DirEntry::Directory(_) => println!("[DIR]  {}", name_str),
-///         orbis_pfs::directory::DirEntry::File(f) => println!("[FILE] {} ({} bytes)", name_str, f.len()),
-///         _ => {},
-///     }
-/// }
-/// # Ok(())
-/// # }
-/// ```
 #[derive(Clone)]
 #[must_use]
-pub struct Directory<'a> {
-    pfs: Arc<Pfs<'a>>,
+pub struct Directory<'a, I: Image> {
+    pfs: Arc<Pfs<'a, I>>,
     inode: usize,
 }
 
-impl<'a> std::fmt::Debug for Directory<'a> {
+impl<'a, I: Image> std::fmt::Debug for Directory<'a, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Directory")
             .field("inode", &self.inode)
@@ -69,8 +49,8 @@ impl<'a> std::fmt::Debug for Directory<'a> {
     }
 }
 
-impl<'a> Directory<'a> {
-    pub(super) fn new(pfs: Arc<Pfs<'a>>, inode: usize) -> Self {
+impl<'a, I: Image> Directory<'a, I> {
+    pub(super) fn new(pfs: Arc<Pfs<'a, I>>, inode: usize) -> Self {
         Self { pfs, inode }
     }
 
@@ -145,13 +125,13 @@ impl<'a> Directory<'a> {
     /// Opens this directory and reads its entries.
     ///
     /// Returns a collection of directory entries (files and subdirectories).
-    pub fn open(&self) -> Result<DirEntries<'a>, OpenError> {
+    pub fn open(&self) -> Result<DirEntries<'a, I>, OpenError> {
         let blocks = self.pfs.block_map(self.inode);
         let block_size = self.pfs.block_size;
         let img = self.pfs.image();
 
         // Read all dirents.
-        let mut items: BTreeMap<Vec<u8>, DirEntry<'a>> = BTreeMap::new();
+        let mut items: BTreeMap<Vec<u8>, DirEntry<'a, I>> = BTreeMap::new();
         let mut block_data = vec![0; block_size as usize];
 
         for &block_num in blocks {
@@ -220,11 +200,11 @@ impl<'a> Directory<'a> {
 /// It can be iterated over or queried by name.
 #[derive(Debug)]
 #[must_use]
-pub struct DirEntries<'a> {
-    items: BTreeMap<Vec<u8>, DirEntry<'a>>,
+pub struct DirEntries<'a, I: Image> {
+    items: BTreeMap<Vec<u8>, DirEntry<'a, I>>,
 }
 
-impl<'a> DirEntries<'a> {
+impl<'a, I: Image> DirEntries<'a, I> {
     /// Returns the number of entries in the directory.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -239,17 +219,17 @@ impl<'a> DirEntries<'a> {
 
     /// Returns a reference to the entry with the given name.
     #[must_use]
-    pub fn get(&self, name: &[u8]) -> Option<&DirEntry<'a>> {
+    pub fn get(&self, name: &[u8]) -> Option<&DirEntry<'a, I>> {
         self.items.get(name)
     }
 
     /// Removes and returns the entry with the given name.
-    pub fn remove(&mut self, name: &[u8]) -> Option<DirEntry<'a>> {
+    pub fn remove(&mut self, name: &[u8]) -> Option<DirEntry<'a, I>> {
         self.items.remove(name)
     }
 
     /// Returns an iterator over the entries.
-    pub fn iter(&self) -> DirEntriesIter<'_, 'a> {
+    pub fn iter(&self) -> DirEntriesIter<'_, 'a, I> {
         DirEntriesIter {
             inner: self.items.iter(),
         }
@@ -261,9 +241,9 @@ impl<'a> DirEntries<'a> {
     }
 }
 
-impl<'a> IntoIterator for DirEntries<'a> {
-    type Item = (Vec<u8>, DirEntry<'a>);
-    type IntoIter = DirEntriesOwnedIter<'a>;
+impl<'a, I: Image> IntoIterator for DirEntries<'a, I> {
+    type Item = (Vec<u8>, DirEntry<'a, I>);
+    type IntoIter = DirEntriesOwnedIter<'a, I>;
 
     fn into_iter(self) -> Self::IntoIter {
         DirEntriesOwnedIter {
@@ -272,9 +252,9 @@ impl<'a> IntoIterator for DirEntries<'a> {
     }
 }
 
-impl<'b, 'a> IntoIterator for &'b DirEntries<'a> {
-    type Item = (&'b [u8], &'b DirEntry<'a>);
-    type IntoIter = DirEntriesIter<'b, 'a>;
+impl<'b, 'a, I: Image> IntoIterator for &'b DirEntries<'a, I> {
+    type Item = (&'b [u8], &'b DirEntry<'a, I>);
+    type IntoIter = DirEntriesIter<'b, 'a, I>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
@@ -284,12 +264,12 @@ impl<'b, 'a> IntoIterator for &'b DirEntries<'a> {
 /// An iterator over directory entries by reference.
 #[derive(Debug)]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
-pub struct DirEntriesIter<'b, 'a> {
-    inner: std::collections::btree_map::Iter<'b, Vec<u8>, DirEntry<'a>>,
+pub struct DirEntriesIter<'b, 'a, I: Image> {
+    inner: std::collections::btree_map::Iter<'b, Vec<u8>, DirEntry<'a, I>>,
 }
 
-impl<'b, 'a> Iterator for DirEntriesIter<'b, 'a> {
-    type Item = (&'b [u8], &'b DirEntry<'a>);
+impl<'b, 'a, I: Image> Iterator for DirEntriesIter<'b, 'a, I> {
+    type Item = (&'b [u8], &'b DirEntry<'a, I>);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(|(k, v)| (k.as_slice(), v))
@@ -300,17 +280,17 @@ impl<'b, 'a> Iterator for DirEntriesIter<'b, 'a> {
     }
 }
 
-impl ExactSizeIterator for DirEntriesIter<'_, '_> {}
+impl<I: Image> ExactSizeIterator for DirEntriesIter<'_, '_, I> {}
 
 /// An owning iterator over directory entries.
 #[derive(Debug)]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
-pub struct DirEntriesOwnedIter<'a> {
-    inner: std::collections::btree_map::IntoIter<Vec<u8>, DirEntry<'a>>,
+pub struct DirEntriesOwnedIter<'a, I: Image> {
+    inner: std::collections::btree_map::IntoIter<Vec<u8>, DirEntry<'a, I>>,
 }
 
-impl<'a> Iterator for DirEntriesOwnedIter<'a> {
-    type Item = (Vec<u8>, DirEntry<'a>);
+impl<'a, I: Image> Iterator for DirEntriesOwnedIter<'a, I> {
+    type Item = (Vec<u8>, DirEntry<'a, I>);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
@@ -321,14 +301,14 @@ impl<'a> Iterator for DirEntriesOwnedIter<'a> {
     }
 }
 
-impl ExactSizeIterator for DirEntriesOwnedIter<'_> {}
+impl<I: Image> ExactSizeIterator for DirEntriesOwnedIter<'_, I> {}
 
 /// Represents an entry in a directory (either a file or subdirectory).
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum DirEntry<'a> {
+pub enum DirEntry<'a, I: Image> {
     /// A subdirectory.
-    Directory(Directory<'a>),
+    Directory(Directory<'a, I>),
     /// A file.
-    File(File<'a>),
+    File(File<'a, I>),
 }

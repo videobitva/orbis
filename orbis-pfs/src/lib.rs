@@ -108,14 +108,19 @@ pub enum OpenImageError {
     Open { source: OpenError },
 }
 
-/// Represents a loaded PFS.
+/// Represents a loaded PFS, generic over the underlying image type `I`.
+///
+/// The type parameter `I` preserves the concrete image stack through the
+/// type system, enabling compile-time–gated access to layer-specific
+/// capabilities (encryption keys, PFSC metadata, CoW overlays) via
+/// [marker traits](image::HasEncryption).
 ///
 /// This type is `Send + Sync` and can be shared across threads via [`Arc`].
 /// All read operations use positional I/O, so concurrent reads from multiple
 /// threads do not require synchronization.
 #[must_use]
-pub struct Pfs<'a> {
-    image: Box<dyn image::Image + 'a>,
+pub struct Pfs<'a, I: image::Image> {
+    image: I,
     inodes: Vec<Inode>,
     /// Precomputed block maps: `block_maps[inode_index]` gives the
     /// logical-block -> physical-block mapping for that inode.
@@ -127,15 +132,7 @@ pub struct Pfs<'a> {
     data: Option<&'a [u8]>,
 }
 
-// SAFETY: All fields are Send + Sync:
-// - Box<dyn Image + 'a>: Image requires Send + Sync
-// - Vec<Inode>: Inode contains only Copy/primitive types
-// - Vec<Vec<u32>>, usize, u32: trivially Send + Sync
-// - Option<&'a [u8]>: &[u8] is Send + Sync
-unsafe impl Send for Pfs<'_> {}
-unsafe impl Sync for Pfs<'_> {}
-
-impl<'a> std::fmt::Debug for Pfs<'a> {
+impl<'a, I: image::Image> std::fmt::Debug for Pfs<'a, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pfs")
             .field("inode_count", &self.inodes.len())
@@ -146,7 +143,7 @@ impl<'a> std::fmt::Debug for Pfs<'a> {
     }
 }
 
-impl<'a> Pfs<'a> {
+impl<'a, I: image::Image> Pfs<'a, I> {
     /// Returns the number of inodes in this PFS.
     ///
     /// This represents the total number of files and directories in the filesystem.
@@ -174,7 +171,7 @@ impl<'a> Pfs<'a> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn root(self: &Arc<Self>) -> Directory<'a> {
+    pub fn root(self: &Arc<Self>) -> Directory<'a, I> {
         Directory::new(self.clone(), self.root)
     }
 
@@ -184,17 +181,23 @@ impl<'a> Pfs<'a> {
         self.block_size
     }
 
-    // --- Internal accessors for File / Directory / PfsFileImage ---
-
-    pub(crate) fn image(&self) -> &dyn image::Image {
-        &*self.image
+    /// Returns a reference to the underlying image.
+    ///
+    /// This provides direct access to the concrete image type, enabling
+    /// access to layer-specific capabilities through marker traits.
+    pub fn image(&self) -> &I {
+        &self.image
     }
 
-    pub(crate) fn inode(&self, index: usize) -> &Inode {
+    /// Returns a reference to the inode at the given index.
+    pub fn inode(&self, index: usize) -> &Inode {
         &self.inodes[index]
     }
 
-    pub(crate) fn block_map(&self, inode: usize) -> &[u32] {
+    /// Returns the block map for the given inode.
+    ///
+    /// The block map translates logical block indices to physical block numbers.
+    pub fn block_map(&self, inode: usize) -> &[u32] {
         &self.block_maps[inode]
     }
 }
@@ -215,6 +218,9 @@ impl<'a> Pfs<'a> {
 /// # Returns
 ///
 /// Returns a thread-safe, reference-counted [`Pfs`] handle on success.
+/// The concrete image type is erased behind `Box<dyn Image>`.
+///
+/// For static dispatch, use [`open_slice_encrypted()`] or [`open_slice_unencrypted()`].
 ///
 /// # Errors
 ///
@@ -236,7 +242,7 @@ impl<'a> Pfs<'a> {
 pub fn open_slice<'a>(
     data: &'a [u8],
     ekpfs: Option<&[u8]>,
-) -> Result<Arc<Pfs<'a>>, OpenSliceError> {
+) -> Result<Arc<Pfs<'a, Box<dyn image::Image + 'a>>>, OpenSliceError> {
     // Parse header directly from the slice.
     let header = PfsHeader::from_bytes(data).context(open_slice_error::ReadHeaderFailedSnafu)?;
 
@@ -269,11 +275,57 @@ pub fn open_slice<'a>(
     Ok(open_inner(image, &header, backing_data)?)
 }
 
+/// Opens an encrypted PFS image from a byte slice with static dispatch.
+///
+/// Unlike [`open_slice()`], this preserves the [`EncryptedSlice`](image::EncryptedSlice)
+/// type, enabling compile-time access to encryption-specific capabilities.
+pub fn open_slice_encrypted<'a>(
+    data: &'a [u8],
+    ekpfs: &[u8],
+) -> Result<Arc<Pfs<'a, image::EncryptedSlice<'a>>>, OpenSliceError> {
+    let header = PfsHeader::from_bytes(data).context(open_slice_error::ReadHeaderFailedSnafu)?;
+
+    ensure!(
+        (header.block_size() as usize) >= image::XTS_BLOCK_SIZE,
+        open_slice_error::EncryptionBlockSizeTooSmallSnafu
+    );
+
+    let key_seed = header.key_seed();
+    let (data_key, tweak_key) = image::get_xts_keys(ekpfs, key_seed);
+    let cipher_1 = Aes128::new((&data_key).into());
+    let cipher_2 = Aes128::new((&tweak_key).into());
+
+    let enc = image::EncryptedSlice::new(
+        data,
+        Xts128::<Aes128>::new(cipher_1, cipher_2),
+        (header.block_size() as usize) / image::XTS_BLOCK_SIZE,
+    );
+
+    Ok(open_inner(enc, &header, None)?)
+}
+
+/// Opens an unencrypted PFS image from a byte slice with static dispatch.
+///
+/// Unlike [`open_slice()`], this preserves the [`UnencryptedSlice`](image::UnencryptedSlice)
+/// type. Zero-copy file access via [`file::File::as_slice()`] is available.
+pub fn open_slice_unencrypted<'a>(
+    data: &'a [u8],
+) -> Result<Arc<Pfs<'a, image::UnencryptedSlice<'a>>>, OpenSliceError> {
+    let header = PfsHeader::from_bytes(data).context(open_slice_error::ReadHeaderFailedSnafu)?;
+
+    let img = image::UnencryptedSlice::new(data);
+
+    Ok(open_inner(img, &header, Some(data))?)
+}
+
 /// Opens a PFS image for reading from any [`Image`](image::Image) implementation.
 ///
 /// This is used when the PFS image is behind a transformation layer (e.g.
 /// a file within another PFS, optionally PFSC-compressed). The image is read
 /// entirely through [`Image::read_at()`](image::Image::read_at).
+///
+/// The concrete image type `I` is preserved, enabling access to
+/// layer-specific capabilities through marker traits.
 ///
 /// # Arguments
 ///
@@ -298,7 +350,7 @@ pub fn open_slice<'a>(
 /// # Ok(())
 /// # }
 /// ```
-pub fn open_image<'a>(image: impl image::Image + 'a) -> Result<Arc<Pfs<'a>>, OpenImageError> {
+pub fn open_image<'a, I: image::Image + 'a>(image: I) -> Result<Arc<Pfs<'a, I>>, OpenImageError> {
     // Read header via positional read.
     let mut header_buf = [0u8; header::HEADER_SIZE];
 
@@ -316,18 +368,18 @@ pub fn open_image<'a>(image: impl image::Image + 'a) -> Result<Arc<Pfs<'a>>, Ope
         }
     );
 
-    Ok(open_inner(Box::new(image), &header, None)?)
+    Ok(open_inner(image, &header, None)?)
 }
 
-/// Shared implementation for [`open_slice()`] and [`open_image()`].
+/// Shared implementation for all `open_*` functions.
 ///
 /// Validates the header fields, reads inodes, precomputes block maps, and
 /// constructs the [`Pfs`].
-fn open_inner<'a>(
-    image: Box<dyn image::Image + 'a>,
+fn open_inner<'a, I: image::Image>(
+    image: I,
     header: &PfsHeader,
     data: Option<&'a [u8]>,
-) -> Result<Arc<Pfs<'a>>, OpenError> {
+) -> Result<Arc<Pfs<'a, I>>, OpenError> {
     let mode = header.mode();
     let block_size = header.block_size();
     let inode_count = header.inode_count();
@@ -358,7 +410,7 @@ fn open_inner<'a>(
     ensure!(super_root < inodes.len(), InvalidSuperRootSnafu);
 
     // Precompute block maps for all inodes.
-    let block_maps = precompute_block_maps(&inodes, image.as_ref(), block_size)?;
+    let block_maps = precompute_block_maps(&inodes, &image, block_size)?;
 
     Ok(Arc::new(Pfs {
         image,

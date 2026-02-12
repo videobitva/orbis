@@ -4,6 +4,7 @@ pub use self::error::ExtractError;
 
 use crate::progress::ExtractProgress;
 use orbis_pfs::directory::DirEntry;
+use orbis_pfs::image::Image;
 use orbis_pkg::Pkg;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::fs::{File, OpenOptions, create_dir_all};
@@ -148,15 +149,17 @@ impl<'a, R: AsRef<[u8]> + Sync, P: ExtractProgress> PkgExtractor<'a, R, P> {
         let is_compressed = inner_file.is_compressed();
         let file_image = inner_file.into_image();
 
-        let inner_pfs = if is_compressed {
+        // Use Box<dyn Image> to unify the compressed/uncompressed branches.
+        let inner_image: Box<dyn Image> = if is_compressed {
             let pfsc = orbis_pfs::pfsc::PfscImage::open(file_image)
                 .map_err(|e| ExtractError::CreateDecompressorFailed { source: e })?;
-            orbis_pfs::open_image(pfsc)
-                .map_err(|e| ExtractError::OpenInnerPfsFailed { source: e })?
+            Box::new(pfsc)
         } else {
-            orbis_pfs::open_image(file_image)
-                .map_err(|e| ExtractError::OpenInnerPfsFailed { source: e })?
+            Box::new(file_image)
         };
+
+        let inner_pfs = orbis_pfs::open_image(inner_image)
+            .map_err(|e| ExtractError::OpenInnerPfsFailed { source: e })?;
 
         let mut inner_root = inner_pfs
             .root()
@@ -206,7 +209,7 @@ impl<'a, R: AsRef<[u8]> + Sync, P: ExtractProgress> PkgExtractor<'a, R, P> {
 
 /// A file to be extracted, collected during the directory walk.
 struct FileWork<'a> {
-    file: orbis_pfs::file::File<'a>,
+    file: orbis_pfs::file::File<'a, Box<dyn Image + 'a>>,
     output_path: PathBuf,
     pfs_path: String,
 }
@@ -214,7 +217,7 @@ struct FileWork<'a> {
 /// Recursively walks a PFS directory tree and collects all directories
 /// and files into flat lists for later parallel extraction.
 fn collect_pfs_items<'a>(
-    dir: orbis_pfs::directory::Directory<'a>,
+    dir: orbis_pfs::directory::Directory<'a, Box<dyn Image + 'a>>,
     output: &Path,
     pfs_path: &str,
     dirs: &mut Vec<PathBuf>,
