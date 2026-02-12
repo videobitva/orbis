@@ -1,3 +1,7 @@
+[![crates.io](https://img.shields.io/crates/v/orbis-pkg-util)](https://crates.io/crates/orbis-pkg-util)
+[![ci](https://github.com/videobitva/orbis/actions/workflows/ci.yml/badge.svg)](https://github.com/videobitva/orbis/actions/workflows/ci.yml)
+[![License: Apache-2.0 OR MIT](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-blue)](LICENSE)
+
 # Orbis
 
 A Rust library and toolset for working with PlayStation 4 PKG and PFS file formats.
