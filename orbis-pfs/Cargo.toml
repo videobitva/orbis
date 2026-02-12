@@ -1,0 +1,22 @@
+[package]
+name = "orbis-pfs"
+version = "0.1.0"
+edition = "2024"
+description = "Library for reading PlayStation 4 PFS (PlayStation File System) images"
+readme = "README.md"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/orbis-pfs"
+keywords = ["ps4", "playstation", "pfs", "filesystem", "orbis"]
+categories = ["filesystem", "parser-implementations"]
+
+[dependencies]
+aes.workspace = true
+flate2 = "1.1.9"
+hmac = "0.12.1"
+sha2.workspace = true
+xts-mode = "0.5.1"
+snafu.workspace = true
+zerocopy = { workspace = true, features = ["derive", "simd"] }

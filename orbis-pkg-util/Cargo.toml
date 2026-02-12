@@ -1,0 +1,36 @@
+[package]
+name = "orbis-pkg-util"
+version = "0.1.0"
+edition = "2024"
+description = "Library and CLI for working with PlayStation 4 PKG files"
+readme = "README.md"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ps4", "playstation", "pkg", "extract", "orbis"]
+categories = ["command-line-utilities"]
+
+[features]
+default = ["cli"]
+cli = ["dep:clap", "dep:indicatif"]
+
+[dependencies]
+memmap2 = "0.9"
+rayon = "1.10"
+orbis-pkg.workspace = true
+orbis-pfs.workspace = true
+snafu.workspace = true
+
+[dependencies.clap]
+version = "4.5"
+features = ["derive"]
+optional = true
+
+[dependencies.indicatif]
+version = "0.17"
+optional = true
+
+[[bin]]
+name = "orbis-pkg-util"
+required-features = ["cli"]
